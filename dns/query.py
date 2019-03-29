@@ -25,6 +25,7 @@ import socket
 import struct
 import sys
 import time
+import ssl
 
 import dns.exception
 import dns.inet
@@ -433,6 +434,119 @@ def _connect(s, address):
             raise v
 
 
+def make_ssl_context():
+    # TLS v1.3 support might not be complete as of Python 3.7.2 and there
+    # seem to be issues when using it in respdiff.
+    # https://docs.python.org/3/library/ssl.html#tls-1-3
+
+    # NOTE forcing TLS v1.2 is hacky, because of different py3/openssl versions...
+    if getattr(ssl, 'PROTOCOL_TLS', None) is not None:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS)  # pylint: disable=no-member
+    else:
+        context = ssl.SSLContext()
+
+    if getattr(ssl, 'maximum_version', None) is not None:
+        context.maximum_version = ssl.TLSVersion.TLSv1_2  # pylint: disable=no-member
+    else:
+        context.options |= ssl.OP_NO_SSLv2
+        context.options |= ssl.OP_NO_SSLv3
+        context.options |= ssl.OP_NO_TLSv1
+        context.options |= ssl.OP_NO_TLSv1_1
+        if getattr(ssl, 'OP_NO_TLSv1_3', None) is not None:
+            context.options |= ssl.OP_NO_TLSv1_3  # pylint: disable=no-member
+
+    # turn off certificate verification
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    return context
+
+def handle_socket_timeout(sock, deadline):
+    # deadline is always time.monotonic
+    if deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("Server took too long to respond")
+        sock.settimeout(remaining)
+
+def recv_n_bytes_from_tcp(sock, n, deadline):
+    # deadline is always time.monotonic
+    data = b""
+    while n != 0:
+        handle_socket_timeout(sock, deadline)
+        chunk = sock.recv(n)
+        # Empty bytes from socket.recv mean that socket is closed
+        if not chunk:
+            raise dns.exception.Timeout
+        n -= len(chunk)
+        data += chunk
+    return data
+
+def send_recv_tls (sock, what, deadline): 
+    if isinstance(what, dns.message.Message):
+        what = what.to_wire()
+    l = len(what)
+    tcpmsg = struct.pack("!H", l) + what
+    sock.sendall(tcpmsg)
+    handle_socket_timeout(sock, deadline)
+    blength = recv_n_bytes_from_tcp (sock, 2, deadline)
+    handle_socket_timeout(sock, deadline)
+    (length, ) = struct.unpack('!H', blength)
+    wire = recv_n_bytes_from_tcp (sock, length, deadline)
+    return (wire)
+
+def tls(q, where, timeout=None, port=853, af=None, source=None, source_port=0,
+        one_rr_per_rrset=False, ignore_trailing=False):
+    """Return the response obtained after sending a query via DNS over TLS.
+
+    *q*, a ``dns.message.Message``, the query to send
+
+    *where*, a ``text`` containing an IPv4 or IPv6 address,  where
+    to send the message.
+
+    *timeout*, a ``float`` or ``None``, the number of seconds to wait before the
+    query times out.  If ``None``, the default, wait forever.
+
+    *port*, an ``int``, the port send the message to.  The default is 53.
+
+    *af*, an ``int``, the address family to use.  The default is ``None``,
+    which causes the address family to use to be inferred from the form of
+    *where*.  If the inference attempt fails, AF_INET is used.  This
+    parameter is historical; you need never set it.
+
+    *source*, a ``text`` containing an IPv4 or IPv6 address, specifying
+    the source address.  The default is the wildcard address.
+
+    *source_port*, an ``int``, the port from which to send the message.
+    The default is 0.
+
+    *one_rr_per_rrset*, a ``bool``.  If ``True``, put each RR into its own
+    RRset.
+
+    *ignore_trailing*, a ``bool``.  If ``True``, ignore trailing
+    junk at end of the received message.
+
+    Returns a ``dns.message.Message``.
+    """
+
+    (af, destination, source) = _destination_and_source(af, where, port,
+        source, source_port)
+    if timeout:
+        deadline = time.monotonic() + timeout
+    else:
+        deadline = None
+    sock = socket_factory(af, socket.SOCK_STREAM, 0)
+    ctx = make_ssl_context()
+    sock = ctx.wrap_socket(sock)
+    if source is not None:
+        sock.bind(source)
+    sock.settimeout(timeout)
+    _connect(sock,destination)
+    wire = send_recv_tls (sock, q, deadline)
+    r = dns.message.from_wire(wire, keyring=q.keyring, request_mac=q.request_mac,
+                              one_rr_per_rrset=one_rr_per_rrset,
+                              ignore_trailing=ignore_trailing)
+    return (r)
+
 def tcp(q, where, timeout=None, port=53, af=None, source=None, source_port=0,
         one_rr_per_rrset=False, ignore_trailing=False):
     """Return the response obtained after sending a query via TCP.
@@ -493,7 +607,6 @@ def tcp(q, where, timeout=None, port=53, af=None, source=None, source_port=0,
     if not q.is_response(r):
         raise BadResponse
     return r
-
 
 def xfr(where, zone, rdtype=dns.rdatatype.AXFR, rdclass=dns.rdataclass.IN,
         timeout=None, port=53, keyring=None, keyname=None, relativize=True,
