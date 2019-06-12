@@ -26,6 +26,7 @@ import struct
 import sys
 import time
 import ssl
+import requests
 
 import dns.exception
 import dns.inet
@@ -486,10 +487,10 @@ def send_recv_tls (sock, what, deadline):
         what = what.to_wire()
     l = len(what)
     tcpmsg = struct.pack("!H", l) + what
+    handle_socket_timeout(sock, deadline)
     sock.sendall(tcpmsg)
     handle_socket_timeout(sock, deadline)
     blength = recv_n_bytes_from_tcp (sock, 2, deadline)
-    handle_socket_timeout(sock, deadline)
     (length, ) = struct.unpack('!H', blength)
     wire = recv_n_bytes_from_tcp (sock, length, deadline)
     return (wire)
@@ -519,12 +520,6 @@ def tls(q, where, timeout=None, port=853, af=None, source=None, source_port=0,
     *source_port*, an ``int``, the port from which to send the message.
     The default is 0.
 
-    *one_rr_per_rrset*, a ``bool``.  If ``True``, put each RR into its own
-    RRset.
-
-    *ignore_trailing*, a ``bool``.  If ``True``, ignore trailing
-    junk at end of the received message.
-
     Returns a ``dns.message.Message``.
     """
 
@@ -546,6 +541,31 @@ def tls(q, where, timeout=None, port=853, af=None, source=None, source_port=0,
                               one_rr_per_rrset=one_rr_per_rrset,
                               ignore_trailing=ignore_trailing)
     return (r)
+
+def https(q, where, one_rr_per_rrset=False, ignore_trailing=False):
+    """Return the response obtained after sending a query via DNS over HTTPS.
+
+    *q*, a ``dns.message.Message``, the query to send
+
+    *where*, a ``text`` containing an URL ,  where
+    to send the message.
+
+    *one_rr_per_rrset*, a ``bool``.  If ``True``, put each RR into its own
+    RRset.
+
+    *ignore_trailing*, a ``bool``.  If ``True``, ignore trailing
+    junk at end of the received message.
+
+    Returns a ``dns.message.Message``.
+    """
+    wire = q.to_wire()
+    client = requests.session()
+    headers = { 'accept': 'application/dns-message',
+                'content-type': 'application/dns-message'}
+    httpresponse = requests.post(where, headers=headers, data=wire)
+    r = dns.message.from_wire(httpresponse.content, keyring=q.keyring, request_mac=q.request_mac, one_rr_per_rrset=one_rr_per_rrset, ignore_trailing=ignore_trailing)
+    return (r)
+
 
 def tcp(q, where, timeout=None, port=53, af=None, source=None, source_port=0,
         one_rr_per_rrset=False, ignore_trailing=False):
