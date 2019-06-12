@@ -542,7 +542,7 @@ def tls(q, where, timeout=None, port=853, af=None, source=None, source_port=0,
                               ignore_trailing=ignore_trailing)
     return (r)
 
-def https(q, where, one_rr_per_rrset=False, ignore_trailing=False):
+def https(q, where, one_rr_per_rrset=False, ignore_trailing=False, verify=True):
     """Return the response obtained after sending a query via DNS over HTTPS.
 
     *q*, a ``dns.message.Message``, the query to send
@@ -562,7 +562,7 @@ def https(q, where, one_rr_per_rrset=False, ignore_trailing=False):
     client = requests.session()
     headers = { 'accept': 'application/dns-message',
                 'content-type': 'application/dns-message'}
-    httpresponse = requests.post(where, headers=headers, data=wire)
+    httpresponse = requests.post(where, headers=headers, data=wire, verify=verify)
     r = dns.message.from_wire(httpresponse.content, keyring=q.keyring, request_mac=q.request_mac, one_rr_per_rrset=one_rr_per_rrset, ignore_trailing=ignore_trailing)
     return (r)
 
