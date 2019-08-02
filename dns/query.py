@@ -190,6 +190,10 @@ def _destination_and_source(af, where, port, source, source_port):
             source = (source, source_port, 0, 0)
     return (af, destination, source)
 
+def _need_requests(*args, **kwargs):
+    raise NotImplementedError("DNS over HTTPs requires the \
+        requests library")
+
 
 def send_udp(sock, what, destination, expiration=None):
     """Send a DNS message to the specified UDP socket.
@@ -542,7 +546,7 @@ def tls(q, where, timeout=None, port=853, af=None, source=None, source_port=0,
                               ignore_trailing=ignore_trailing)
     return (r)
 
-def https(q, where, one_rr_per_rrset=False, ignore_trailing=False, verify=True):
+def _https(q, where, one_rr_per_rrset=False, ignore_trailing=False, verify=True):
     """Return the response obtained after sending a query via DNS over HTTPS.
 
     *q*, a ``dns.message.Message``, the query to send
@@ -808,3 +812,13 @@ def xfr(where, zone, rdtype=dns.rdatatype.AXFR, rdclass=dns.rdataclass.IN,
             raise dns.exception.FormError("missing TSIG")
         yield r
     s.close()
+
+try:
+    import requests
+except ImportError:
+    https = _need_requests
+    _have_requests = False
+else:
+    https = _https
+    _have_requests = True
+
